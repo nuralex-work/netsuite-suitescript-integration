@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetSuite RESTlet CRUD"
+  short_description: "Build CRUD or upsert SuiteScript RESTlets with shared helpers"
+  default_prompt: "Use this skill to create or update NetSuite RESTlet CRUD or upsert handlers and shared helper modules following the repo pattern, standardized responses, normalize or resolve helpers, and transaction sublist mapping."
