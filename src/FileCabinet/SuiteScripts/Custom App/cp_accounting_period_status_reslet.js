@@ -2,65 +2,21 @@
  * @NApiVersion 2.1
  * @NScriptType Restlet
  */
-define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search'],
+define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search', 'N/format'],
     /**
  * @param{Object} globalHelper
  * @param{Object} responseHelper
  * @param{error} error
  * @param{log} log
  * @param{search} search
+ * @param{format} format
  */
-    (globalHelper, responseHelper, error, log, search) => {
+    (globalHelper, responseHelper, error, log, search, format) => {
         const RECORD_TYPE = 'accountingperiod';
+        const SEARCH_PAGE_SIZE = 1000;
         const logDebugError = globalHelper.createDebugLogger(log);
 
         const isBadRequestError = (errorObject) => ['MISSING_REQ_ARG', 'INVALID_DATA'].indexOf(errorObject && errorObject.name) >= 0;
-
-        const buildSearch = (requestParams = {}) => {
-            globalHelper.doValidation(error, [requestParams.periodDate], ['periodDate'], 'get');
-
-            return search.create({
-                type: RECORD_TYPE,
-                filters: [
-                    ['startdate', 'onorbefore', requestParams.periodDate],
-                    'and',
-                    ['enddate', 'onorafter', requestParams.periodDate],
-                    'and',
-                    ['isquarter', 'is', 'F'],
-                    'and',
-                    ['isyear', 'is', 'F']
-                ],
-                columns: [
-                    search.createColumn({ name: 'internalid' }),
-                    search.createColumn({ name: 'periodname' }),
-                    search.createColumn({ name: 'startdate' }),
-                    search.createColumn({ name: 'enddate' }),
-                    search.createColumn({ name: 'closed' }),
-                    search.createColumn({ name: 'alllocked' }),
-                    search.createColumn({ name: 'aplocked' }),
-                    search.createColumn({ name: 'arlocked' }),
-                    search.createColumn({ name: 'payrolllocked' })
-                ]
-            });
-        };
-
-        const getSubsidiaryValue = (requestParams = {}) => {
-            if (globalHelper.isEmpty(requestParams.subsidiary)) {
-                return '';
-            }
-
-            const subsidiaryId = globalHelper.resolveRecordId(
-                search,
-                requestParams.subsidiary,
-                ['name', 'namenohierarchy'],
-                ['subsidiary'],
-                'subsidiary',
-                error
-            );
-            const subsidiaryLookup = globalHelper.lookupFields(search, 'subsidiary', subsidiaryId, ['namenohierarchy']);
-
-            return subsidiaryLookup.namenohierarchy || String(requestParams.subsidiary);
-        };
 
         const toBoolean = (value) => {
             if (typeof value === 'boolean') {
@@ -68,10 +24,100 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search'],
             }
 
             if (typeof value === 'string') {
-                return ['T', 'true', '1', 'yes', 'y'].indexOf(value) >= 0;
+                return ['t', 'true', '1', 'yes', 'y', 'T'].indexOf(value) >= 0;
             }
 
             return value === 1;
+        };
+
+        const normalizeCompareValue = (value) => String(value || '').trim().toLowerCase();
+
+        const normalizeRequestDate = (periodDate) => {
+            globalHelper.doValidation(error, [periodDate], ['periodDate'], 'get');
+
+            const normalizedDate = globalHelper.normalizeDateValue(periodDate, 'periodDate', error);
+
+            return {
+                dateObject: normalizedDate,
+                searchValue: format.format({
+                    value: normalizedDate,
+                    type: format.Type.DATE
+                }),
+                isoValue: normalizedDate.toISOString().slice(0, 10)
+            };
+        };
+
+        const parseSearchDate = (value) => {
+            if (globalHelper.isEmpty(value)) {
+                return null;
+            }
+
+            try {
+                return format.parse({
+                    value,
+                    type: format.Type.DATE
+                });
+            } catch (e) {
+                logDebugError('cp_accounting_period_status_reslet.parseSearchDate error', e, { value });
+                return null;
+            }
+        };
+
+        const buildBaseSearch = () => search.create({
+            type: RECORD_TYPE,
+            filters: [
+                ['isquarter', 'is', 'F'],
+                'and',
+                ['isyear', 'is', 'F']
+            ],
+            columns: [
+                search.createColumn({
+                    name: 'startdate',
+                    sort: search.Sort.ASC
+                }),
+                search.createColumn({ name: 'internalid' }),
+                search.createColumn({ name: 'periodname' }),
+                search.createColumn({ name: 'enddate' }),
+                search.createColumn({ name: 'closed' }),
+                search.createColumn({ name: 'alllocked' }),
+                search.createColumn({ name: 'aplocked' }),
+                search.createColumn({ name: 'arlocked' }),
+                search.createColumn({ name: 'payrolllocked' })
+            ]
+        });
+
+        const getSubsidiaryValue = (requestParams = {}) => {
+            if (globalHelper.isEmpty(requestParams.subsidiary)) {
+                return '';
+            }
+
+            try {
+                const subsidiaryId = globalHelper.resolveRecordId(
+                    search,
+                    requestParams.subsidiary,
+                    ['name', 'namenohierarchy'],
+                    ['subsidiary'],
+                    'subsidiary',
+                    error
+                );
+                const subsidiaryLookup = globalHelper.lookupFields(search, 'subsidiary', subsidiaryId, ['namenohierarchy']);
+
+                return subsidiaryLookup.namenohierarchy || String(requestParams.subsidiary);
+            } catch (e) {
+                logDebugError('cp_accounting_period_status_reslet.getSubsidiaryValue error', e, { requestParams });
+                throw e;
+            }
+        };
+
+        const isDateWithinPeriod = (targetDate, startDateValue, endDateValue) => {
+            const startDate = parseSearchDate(startDateValue);
+            const endDate = parseSearchDate(endDateValue);
+
+            if (!startDate || !endDate) {
+                return false;
+            }
+
+            return targetDate.getTime() >= startDate.getTime() && targetDate.getTime() <= endDate.getTime();
         };
 
         const mapResult = (result, subsidiaryValue) => {
@@ -98,14 +144,37 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search'],
             try {
                 log.debug('GET requestParams', requestParams);
 
+                const normalizedPeriodDate = normalizeRequestDate(requestParams.periodDate);
                 const subsidiaryValue = getSubsidiaryValue(requestParams);
-                const results = buildSearch(requestParams).run().getRange({
-                    start: 0,
-                    end: 100
-                }) || [];
+                const searchResults = [];
+                const periodSearch = buildBaseSearch();
+                const pagedData = periodSearch.runPaged({ pageSize: SEARCH_PAGE_SIZE });
+
+                pagedData.pageRanges.forEach((pageRange) => {
+                    const page = pagedData.fetch({ index: pageRange.index });
+
+                    page.data.forEach((result) => {
+                        searchResults.push(result);
+                    });
+                });
+
+                const items = searchResults
+                    .filter((result) => isDateWithinPeriod(
+                        normalizedPeriodDate.dateObject,
+                        result.getValue({ name: 'startdate' }),
+                        result.getValue({ name: 'enddate' })
+                    ))
+                    .map((result) => mapResult(result, subsidiaryValue))
+                    .filter((item) => {
+                        if (globalHelper.isEmpty(requestParams.subsidiary)) {
+                            return true;
+                        }
+
+                        return normalizeCompareValue(item.subsidiary) === normalizeCompareValue(subsidiaryValue);
+                    });
 
                 return responseHelper.success('Get Accounting Period Status Successfully', {
-                    items: results.map((result) => mapResult(result, subsidiaryValue))
+                    items
                 });
             } catch (e) {
                 logDebugError('cp_accounting_period_status_reslet.get error', e, { requestParams });
