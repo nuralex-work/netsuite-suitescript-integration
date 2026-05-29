@@ -14,6 +14,8 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
     (globalHelper, responseHelper, error, log, record, search) => {
         const RECORD_TYPE = 'vendorbill';
         const ITEM_SUBLIST_ID = 'item';
+        const DEFAULT_LIMIT = 10;
+        const MAX_LIMIT = 20;
         const logDebugError = globalHelper.createDebugLogger(log);
 
         const createBadRequestError = (message) => error.create({
@@ -24,6 +26,25 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
         const isBadRequestError = (errorObject) => ['MISSING_REQ_ARG', 'INVALID_DATA'].indexOf(errorObject && errorObject.name) >= 0;
 
         const getPostSource = (requestBody = {}) => requestBody.fields || requestBody;
+
+        const getRecordIds = (requestParams) => {
+            const requestedId = globalHelper.getRequestedId(requestParams);
+
+            if (requestedId) {
+                return [requestedId];
+            }
+
+            const limit = Math.min(
+                globalHelper.parsePositiveInt(requestParams && requestParams.limit, DEFAULT_LIMIT),
+                MAX_LIMIT
+            );
+
+            return globalHelper.searchRecordIds(search, {
+                recordType: RECORD_TYPE,
+                filters: [['mainline', 'is', 'T']],
+                end: limit
+            });
+        };
 
         const loadVendorBill = (recordId) => globalHelper.loadRecordData(
             record,
@@ -73,7 +94,7 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             headerFields.entity = globalHelper.resolveRecordId(
                 search,
                 payload.entity,
-                ['companyname', 'entityid', 'altname'],
+                ['altname'],
                 ['vendor'],
                 'entity',
                 error
@@ -107,7 +128,7 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             return headerFields;
         };
 
-        const buildItemLines = (requestBody = {}) => {
+        const buildItemLines = (requestBody = {}, headerFields = {}) => {
             const itemLines = globalHelper.extractItemLines(requestBody);
 
             if (!Array.isArray(itemLines) || itemLines.length === 0) {
@@ -133,6 +154,16 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
                     ),
                     quantity: globalHelper.normalizeNumberValue(line.quantity, 'quantity', error),
                     rate: globalHelper.normalizeNumberValue(line.rate, 'rate', error),
+                    location: !globalHelper.isEmpty(line && line.location)
+                        ? globalHelper.resolveRecordId(
+                            search,
+                            line.location,
+                            ['name'],
+                            ['location'],
+                            'location',
+                            error
+                        )
+                        : headerFields.location,
                     taxcode: globalHelper.resolveRecordId(
                         search,
                         line.taxcode,
@@ -151,7 +182,7 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
                 globalHelper.doValidation(error, [requestBody], ['requestBody'], 'post');
 
                 const bodyFields = buildHeaderFields(requestBody);
-                const itemLines = buildItemLines(requestBody);
+                const itemLines = buildItemLines(requestBody, bodyFields);
 
                 const createdId = globalHelper.createRecord(record, {
                     recordType: RECORD_TYPE,
@@ -174,7 +205,29 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             }
         };
 
-        const get = (requestParams = {}) => responseHelper.badRequest('Method GET is not implemented', requestParams);
+        const get = (requestParams = {}) => {
+            try {
+                log.debug('GET requestParams', requestParams);
+
+                const requestedId = globalHelper.getRequestedId(requestParams);
+                const recordIds = getRecordIds(requestParams);
+                const records = requestedId
+                    ? loadVendorBill(recordIds[0])
+                    : recordIds.map((recordId) => loadVendorBill(recordId));
+
+                return responseHelper.success('Get Vendor Bill Successfully', {
+                    record: records,
+                    total_record: Array.isArray(records) ? records.length : 1
+                });
+            } catch (e) {
+                logDebugError('cp_vendor_bill_reslet.get error', e, { requestParams });
+                if (isBadRequestError(e)) {
+                    return responseHelper.badRequest(e.message, null);
+                }
+
+                return responseHelper.serverError(e, null);
+            }
+        };
 
         const put = (requestBody = {}) => responseHelper.badRequest('Method PUT is not implemented', requestBody);
 

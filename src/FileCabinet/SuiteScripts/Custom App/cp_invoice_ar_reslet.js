@@ -14,6 +14,8 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
     (globalHelper, responseHelper, error, log, record, search) => {
         const RECORD_TYPE = 'invoice';
         const ITEM_SUBLIST_ID = 'item';
+        const DEFAULT_LIMIT = 10;
+        const MAX_LIMIT = 20;
         const logDebugError = globalHelper.createDebugLogger(log);
 
         const createBadRequestError = (message) => error.create({
@@ -24,6 +26,25 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
         const isBadRequestError = (errorObject) => ['MISSING_REQ_ARG', 'INVALID_DATA'].indexOf(errorObject && errorObject.name) >= 0;
 
         const getPostSource = (requestBody = {}) => requestBody.fields || requestBody;
+
+        const getRecordIds = (requestParams) => {
+            const requestedId = globalHelper.getRequestedId(requestParams);
+
+            if (requestedId) {
+                return [requestedId];
+            }
+
+            const limit = Math.min(
+                globalHelper.parsePositiveInt(requestParams && requestParams.limit, DEFAULT_LIMIT),
+                MAX_LIMIT
+            );
+
+            return globalHelper.searchRecordIds(search, {
+                recordType: RECORD_TYPE,
+                filters: [['mainline', 'is', 'T']],
+                end: limit
+            });
+        };
 
         const loadInvoice = (recordId) => globalHelper.loadRecordData(
             record,
@@ -109,7 +130,7 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             headerFields.account = globalHelper.resolveRecordId(
                 search,
                 payload.account,
-                ['number'],
+                ['name'],
                 ['account'],
                 'account',
                 error
@@ -189,7 +210,29 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             }
         };
 
-        const get = (requestParams = {}) => responseHelper.badRequest('Method GET is not implemented', requestParams);
+        const get = (requestParams = {}) => {
+            try {
+                log.debug('GET requestParams', requestParams);
+
+                const requestedId = globalHelper.getRequestedId(requestParams);
+                const recordIds = getRecordIds(requestParams);
+                const records = requestedId
+                    ? loadInvoice(recordIds[0])
+                    : recordIds.map((recordId) => loadInvoice(recordId));
+
+                return responseHelper.success('Get Invoice AR Successfully', {
+                    record: records,
+                    total_record: Array.isArray(records) ? records.length : 1
+                });
+            } catch (e) {
+                logDebugError('cp_invoice_ar_reslet.get error', e, { requestParams });
+                if (isBadRequestError(e)) {
+                    return responseHelper.badRequest(e.message, null);
+                }
+
+                return responseHelper.serverError(e, null);
+            }
+        };
 
         const put = (requestBody = {}) => responseHelper.badRequest('Method PUT is not implemented', requestBody);
 
