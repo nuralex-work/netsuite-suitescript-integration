@@ -18,6 +18,14 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
         const MAX_LIMIT = 20;
         const DEFAULT_CURRENCY = 'IDR';
         const DEFAULT_DEPARTMENT = 'IT & Smartpay';
+        const ADDITIONAL_HEADER_FIELD_IDS = [
+            'custbodycustbody_ea_car',
+            'custbodycustbody_ea_motorbike',
+            'custbodycustbody_ex_car',
+            'custbodycustbody_ex_motorbike',
+            'custbodycustbody_srf_entry',
+            'custbodycustbody_srf_exit'
+        ];
         const logDebugError = globalHelper.createDebugLogger(log);
 
         const getRecordIds = (requestParams) => {
@@ -178,6 +186,12 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             if (!globalHelper.isEmpty(payload.custbody_proposal_number)) {
                 headerFields.custbody_proposal_number = payload.custbody_proposal_number;
             }
+
+            ADDITIONAL_HEADER_FIELD_IDS.forEach((fieldId) => {
+                if (!globalHelper.isEmpty(payload[fieldId])) {
+                    headerFields[fieldId] = payload[fieldId];
+                }
+            });
 
             headerFields.custbodycustbody_trx_req_custapp = globalHelper.normalizeCheckboxValue(
                 true,

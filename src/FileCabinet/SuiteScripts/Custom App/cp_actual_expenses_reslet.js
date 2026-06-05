@@ -11,7 +11,7 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search'],
  * @param{search} search
  */
     (globalHelper, responseHelper, error, log, search) => {
-        const RECORD_TYPE = 'transaction';
+        const SAVED_SEARCH_ID = 'customsearchactual_expense';
         const DEFAULT_LIMIT = 100;
         const MAX_LIMIT = 1000;
         const DEFAULT_OFFSET = 0;
@@ -34,17 +34,21 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search'],
             );
         };
 
-        const buildFilters = (requestParams = {}) => {
-            const filters = [
-                ['posting', 'is', 'T'],
-                'and',
-                ['mainline', 'is', 'F'],
-                'and',
-                ['taxline', 'is', 'F'],
-                'and',
-                ['account', 'noneof', '@NONE@']
-            ];
+        const appendFilter = (filters, nextFilter) => {
+            if (!nextFilter) {
+                return filters;
+            }
 
+            if ((filters || []).length > 0) {
+                filters.push('and');
+            }
+
+            filters.push(nextFilter);
+            return filters;
+        };
+
+        const buildAdditionalFilters = (requestParams = {}) => {
+            const filters = [];
             const subsidiaryId = resolveOptionalRecordId(
                 requestParams.subsidiary,
                 ['name', 'namenohierarchy'],
@@ -65,57 +69,135 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search'],
             );
 
             if (!globalHelper.isEmpty(subsidiaryId)) {
-                filters.push('and', ['subsidiary', 'anyof', String(subsidiaryId)]);
+                appendFilter(filters, ['subsidiary', 'anyof', String(subsidiaryId)]);
             }
 
             if (!globalHelper.isEmpty(locationId)) {
-                filters.push('and', ['location', 'anyof', String(locationId)]);
+                appendFilter(filters, ['location', 'anyof', String(locationId)]);
             }
 
             if (!globalHelper.isEmpty(accountId)) {
-                filters.push('and', ['account', 'anyof', String(accountId)]);
+                appendFilter(filters, ['account', 'anyof', String(accountId)]);
             }
 
             if (!globalHelper.isEmpty(requestParams.periodStart) && !globalHelper.isEmpty(requestParams.periodEnd)) {
-                filters.push('and', ['trandate', 'within', requestParams.periodStart, requestParams.periodEnd]);
+                appendFilter(filters, ['trandate', 'within', requestParams.periodStart, requestParams.periodEnd]);
             } else if (!globalHelper.isEmpty(requestParams.periodStart)) {
-                filters.push('and', ['trandate', 'onorafter', requestParams.periodStart]);
+                appendFilter(filters, ['trandate', 'onorafter', requestParams.periodStart]);
             } else if (!globalHelper.isEmpty(requestParams.periodEnd)) {
-                filters.push('and', ['trandate', 'onorbefore', requestParams.periodEnd]);
+                appendFilter(filters, ['trandate', 'onorbefore', requestParams.periodEnd]);
             }
 
             return filters;
         };
 
-        const buildSearch = (requestParams = {}) => search.create({
-            type: RECORD_TYPE,
-            filters: buildFilters(requestParams),
-            columns: [
-                search.createColumn({
-                    name: 'trandate',
-                    sort: search.Sort.DESC
-                }),
-                search.createColumn({ name: 'internalid' }),
-                search.createColumn({ name: 'type' }),
-                search.createColumn({ name: 'account' }),
-                search.createColumn({ name: 'number', join: 'account' }),
-                search.createColumn({ name: 'memo' }),
-                search.createColumn({ name: 'amount' }),
-                search.createColumn({ name: 'location' }),
-                search.createColumn({ name: 'subsidiary' })
-            ]
-        });
+        const buildSearch = (requestParams = {}) => {
+            const loadedSearch = search.load({
+                id: SAVED_SEARCH_ID
+            });
+            const baseFilters = Array.isArray(loadedSearch.filterExpression)
+                ? loadedSearch.filterExpression.slice()
+                : [];
+            const additionalFilters = buildAdditionalFilters(requestParams);
+
+            if (additionalFilters.length > 0) {
+                loadedSearch.filterExpression = baseFilters.length > 0
+                    ? [baseFilters, 'and', additionalFilters]
+                    : additionalFilters;
+            }
+
+            return loadedSearch;
+        };
+
+        const getColumn = (result, candidates) => {
+            const columns = result.columns || [];
+            let matchedColumn = null;
+
+            (candidates || []).some((candidate) => {
+                return columns.some((column) => {
+                    const nameMatches = !candidate.name || column.name === candidate.name;
+                    const joinMatches = !candidate.join || column.join === candidate.join;
+                    const labelMatches = !candidate.label || column.label === candidate.label;
+
+                    if (nameMatches && joinMatches && labelMatches) {
+                        matchedColumn = column;
+                        return true;
+                    }
+
+                    return false;
+                });
+            });
+
+            return matchedColumn;
+        };
+
+        const getResultValue = (result, candidates, getterName) => {
+            const targetColumn = getColumn(result, candidates);
+
+            if (!targetColumn) {
+                return '';
+            }
+
+            try {
+                return result[getterName](targetColumn) || '';
+            } catch (e) {
+                logDebugError('cp_actual_expenses_reslet.getResultValue error', e, {
+                    getterName,
+                    columnName: targetColumn.name,
+                    columnJoin: targetColumn.join,
+                    columnLabel: targetColumn.label
+                });
+                return '';
+            }
+        };
 
         const mapResult = (result) => ({
-            id: String(result.getValue({ name: 'internalid' }) || ''),
-            tranDate: result.getValue({ name: 'trandate' }),
-            account: result.getValue({ name: 'number', join: 'account' }) || result.getValue({ name: 'account' }),
-            accountName: result.getText({ name: 'account' }) || '',
-            amount: Number(result.getValue({ name: 'amount' }) || 0),
-            memo: result.getValue({ name: 'memo' }) || '',
-            location: result.getText({ name: 'location' }) || result.getValue({ name: 'location' }) || '',
-            subsidiary: result.getText({ name: 'subsidiary' }) || result.getValue({ name: 'subsidiary' }) || '',
-            type: result.getText({ name: 'type' }) || result.getValue({ name: 'type' }) || ''
+            id: String(getResultValue(result, [
+                { name: 'internalid' },
+                { name: 'internalid', label: 'Internal ID' }
+            ], 'getValue') || ''),
+            tranDate: getResultValue(result, [
+                { name: 'trandate' },
+                { name: 'trandate', label: 'Date' }
+            ], 'getValue'),
+            account: getResultValue(result, [
+                { name: 'number', join: 'account' },
+                { name: 'account', label: 'Account Number' },
+                { name: 'account' }
+            ], 'getValue'),
+            accountName: getResultValue(result, [
+                { name: 'account' },
+                { name: 'account', label: 'Account' }
+            ], 'getText'),
+            amount: Number(getResultValue(result, [
+                { name: 'amount' },
+                { name: 'amount', label: 'Amount' }
+            ], 'getValue') || 0),
+            memo: getResultValue(result, [
+                { name: 'memo' },
+                { name: 'memo', label: 'Memo' }
+            ], 'getValue'),
+            location: getResultValue(result, [
+                { name: 'location' },
+                { name: 'location', label: 'Location' }
+            ], 'getText') || getResultValue(result, [
+                { name: 'location' },
+                { name: 'location', label: 'Location' }
+            ], 'getValue'),
+            subsidiary: getResultValue(result, [
+                { name: 'subsidiary' },
+                { name: 'subsidiary', label: 'Subsidiary' }
+            ], 'getText') || getResultValue(result, [
+                { name: 'subsidiary' },
+                { name: 'subsidiary', label: 'Subsidiary' }
+            ], 'getValue'),
+            type: getResultValue(result, [
+                { name: 'type' },
+                { name: 'type', label: 'Type' }
+            ], 'getText') || getResultValue(result, [
+                { name: 'type' },
+                { name: 'type', label: 'Type' }
+            ], 'getValue')
         });
 
         const get = (requestParams = {}) => {
