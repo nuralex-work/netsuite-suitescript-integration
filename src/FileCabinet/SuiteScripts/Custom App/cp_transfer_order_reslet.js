@@ -25,6 +25,21 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
 
         const getPostSource = (requestBody = {}) => requestBody.fields || requestBody;
 
+        const getRecordIds = (requestParams = {}) => {
+            const requestedId = globalHelper.getRequestedId(requestParams);
+
+            if (requestedId) {
+                return [requestedId];
+            }
+
+            return globalHelper.searchRecordIds(search, {
+                recordType: RECORD_TYPE,
+                filters: [['mainline', 'is', 'T']],
+                start: 0,
+                end: globalHelper.parsePositiveInt(requestParams && requestParams.limit, 100)
+            });
+        };
+
         const loadTransferOrder = (recordId) => globalHelper.loadRecordData(
             record,
             RECORD_TYPE,
@@ -32,6 +47,116 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             { sublistIds: [ITEM_SUBLIST_ID] },
             logDebugError
         );
+
+        const getBodyValue = (loadedRecord, fieldId) => {
+            try {
+                return loadedRecord.getValue({ fieldId });
+            } catch (e) {
+                logDebugError('cp_transfer_order_reslet.getBodyValue error', e, { fieldId });
+                return '';
+            }
+        };
+
+        const getBodyText = (loadedRecord, fieldId) => {
+            try {
+                return loadedRecord.getText({ fieldId }) || '';
+            } catch (e) {
+                logDebugError('cp_transfer_order_reslet.getBodyText error', e, { fieldId });
+                return '';
+            }
+        };
+
+        const getLineValue = (loadedRecord, line, fieldId) => {
+            try {
+                return loadedRecord.getSublistValue({
+                    sublistId: ITEM_SUBLIST_ID,
+                    fieldId,
+                    line
+                });
+            } catch (e) {
+                logDebugError('cp_transfer_order_reslet.getLineValue error', e, { fieldId, line });
+                return '';
+            }
+        };
+
+        const getLineText = (loadedRecord, line, fieldId) => {
+            try {
+                return loadedRecord.getSublistText({
+                    sublistId: ITEM_SUBLIST_ID,
+                    fieldId,
+                    line
+                }) || '';
+            } catch (e) {
+                logDebugError('cp_transfer_order_reslet.getLineText error', e, { fieldId, line });
+                return '';
+            }
+        };
+
+        const formatDateValue = (value) => {
+            if (!(value instanceof Date)) {
+                return value || '';
+            }
+
+            const year = value.getFullYear();
+            const month = String(value.getMonth() + 1).padStart(2, '0');
+            const day = String(value.getDate()).padStart(2, '0');
+
+            return year + '-' + month + '-' + day;
+        };
+
+        const getItemIdValue = (itemInternalId, fallbackText) => {
+            if (globalHelper.isEmpty(itemInternalId)) {
+                return fallbackText || '';
+            }
+
+            try {
+                const itemLookup = globalHelper.lookupFields(search, 'item', itemInternalId, ['itemid']);
+                return itemLookup.itemid || fallbackText || String(itemInternalId);
+            } catch (e) {
+                logDebugError('cp_transfer_order_reslet.getItemIdValue error', e, { itemInternalId });
+                return fallbackText || String(itemInternalId);
+            }
+        };
+
+        const mapTransferOrder = (recordId) => {
+            const loadedRecord = record.load({
+                type: RECORD_TYPE,
+                id: recordId,
+                isDynamic: false
+            });
+            const lineCount = loadedRecord.getLineCount({ sublistId: ITEM_SUBLIST_ID }) || 0;
+            const dataRecord = {
+                id: String(recordId),
+                subsidiary: getBodyText(loadedRecord, 'subsidiary') || String(getBodyValue(loadedRecord, 'subsidiary') || ''),
+                trandate: formatDateValue(getBodyValue(loadedRecord, 'trandate')),
+                location: getBodyText(loadedRecord, 'location') || String(getBodyValue(loadedRecord, 'location') || ''),
+                transferlocation: getBodyText(loadedRecord, 'transferlocation') || String(getBodyValue(loadedRecord, 'transferlocation') || ''),
+                department: getBodyText(loadedRecord, 'department') || String(getBodyValue(loadedRecord, 'department') || ''),
+                custbody_from_proposal: getBodyValue(loadedRecord, 'custbody_from_proposal') || '',
+                custbodycustbody_field_proposalid: getBodyValue(loadedRecord, 'custbodycustbody_field_proposalid') || '',
+                custbodycustbody_trx_req_custapp: !!getBodyValue(loadedRecord, 'custbodycustbody_trx_req_custapp'),
+                custbodycustbody_transac_cp: getBodyText(loadedRecord, 'custbodycustbody_transac_cp')
+                    || String(getBodyValue(loadedRecord, 'custbodycustbody_transac_cp') || ''),
+                item: []
+            };
+
+            for (let line = 0; line < lineCount; line += 1) {
+                const itemInternalId = getLineValue(loadedRecord, line, 'item');
+                const quantity = globalHelper.normalizeNumberValue(
+                    getLineValue(loadedRecord, line, 'quantity') || 0,
+                    'quantity',
+                    error
+                );
+
+                dataRecord.item.push({
+                    item: getItemIdValue(itemInternalId, getLineText(loadedRecord, line, 'item')),
+                    quantity,
+                    units: getLineText(loadedRecord, line, 'units') || String(getLineValue(loadedRecord, line, 'units') || '')
+                });
+            }
+
+            return dataRecord;
+        };
 
         const buildHeaderFields = (requestBody = {}) => {
             const payload = getPostSource(requestBody);
@@ -96,8 +221,8 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
                 headerFields.custbody_from_proposal = payload.custbody_from_proposal;
             }
 
-            if (!globalHelper.isEmpty(payload.custbody_proposal_id)) {
-                headerFields.custbody_proposal_id = payload.custbody_proposal_id;
+            if (!globalHelper.isEmpty(payload.custbodycustbody_field_proposalid)) {
+                headerFields.custbodycustbody_field_proposalid = payload.custbodycustbody_field_proposalid;
             }
 
             headerFields.custbodycustbody_trx_req_custapp = true;
@@ -107,14 +232,6 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             }
 
             return headerFields;
-        };
-
-        const resolveLineUnit = (line, itemReference) => {
-            if (globalHelper.isEmpty(line && line.units)) {
-                return itemReference.unitId;
-            }
-
-            return globalHelper.normalizeSelectValue(line.units);
         };
 
         const buildItemLines = (requestBody = {}) => {
@@ -142,10 +259,9 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
                     item: itemReference.itemId,
                     quantity: globalHelper.normalizeNumberValue(line.quantity, 'quantity', error)
                 };
-                const unitId = resolveLineUnit(line, itemReference);
 
-                if (!globalHelper.isEmpty(unitId)) {
-                    mappedLine.units = unitId;
+                if (!globalHelper.isEmpty(itemReference.unitId)) {
+                    mappedLine.units = itemReference.unitId;
                 }
 
                 return mappedLine;
@@ -163,7 +279,8 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
                     sublistId: ITEM_SUBLIST_ID,
                     sublistLines: buildItemLines(requestBody),
                     isDynamic: false,
-                    sublistTextFieldIds: ['units']
+                    bodyTextFieldIds: ['custbodycustbody_transac_cp'],
+                    sublistTextFieldIds: []
                 }, logDebugError);
 
                 return responseHelper.success('Create Transfer Order Successfully', loadTransferOrder(createdId));
@@ -177,7 +294,26 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/record', 
             }
         };
 
-        const get = (requestParams = {}) => responseHelper.badRequest('Method GET is not implemented', requestParams);
+        const get = (requestParams = {}) => {
+            try {
+                log.debug('GET requestParams', requestParams);
+
+                const requestedId = globalHelper.getRequestedId(requestParams);
+                const recordIds = getRecordIds(requestParams);
+                const dataRecord = requestedId
+                    ? mapTransferOrder(recordIds[0])
+                    : recordIds.map((recordId) => mapTransferOrder(recordId));
+
+                return responseHelper.success('Get Transfer Order Successfully', dataRecord);
+            } catch (e) {
+                logDebugError('cp_transfer_order_reslet.get error', e, { requestParams });
+                if (isBadRequestError(e)) {
+                    return responseHelper.badRequest(e.message, null);
+                }
+
+                return responseHelper.serverError(e, null);
+            }
+        };
 
         const put = (requestBody = {}) => responseHelper.badRequest('Method PUT is not implemented', requestBody);
 
