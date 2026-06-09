@@ -13,9 +13,7 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search', 
  */
     (globalHelper, responseHelper, error, log, search, format) => {
         const SAVED_SEARCH_ID = 'customsearchactual_expense';
-        const DEFAULT_LIMIT = 100;
-        const MAX_LIMIT = 1000;
-        const DEFAULT_OFFSET = 0;
+        const SEARCH_PAGE_SIZE = 1000;
         const logDebugError = globalHelper.createDebugLogger(log);
 
         const isBadRequestError = (errorObject) => ['MISSING_REQ_ARG', 'INVALID_DATA'].indexOf(errorObject && errorObject.name) >= 0;
@@ -48,7 +46,7 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search', 
             return filters;
         };
 
-        const normalizeSearchDate = (value, fieldName) => {
+        const normalizeDateFilterValue = (value, fieldName) => {
             if (globalHelper.isEmpty(value)) {
                 return '';
             }
@@ -59,73 +57,10 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search', 
             });
         };
 
-        const getPeriodEndValue = (requestParams = {}) => requestParams.periodEnd;
-
-        const parseDateForCompare = (dateValue) => {
-            if (globalHelper.isEmpty(dateValue)) {
-                return null;
-            }
-
-            if (dateValue instanceof Date) {
-                const dateObject = new Date(dateValue.getTime());
-                dateObject.setHours(0, 0, 0, 0);
-                return dateObject;
-            }
-
-            const normalizedDateValue = String(dateValue).trim();
-            const isoDateParts = normalizedDateValue.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-
-            if (isoDateParts) {
-                const dateObject = new Date(
-                    Number(isoDateParts[1]),
-                    Number(isoDateParts[2]) - 1,
-                    Number(isoDateParts[3])
-                );
-
-                dateObject.setHours(0, 0, 0, 0);
-                return dateObject;
-            }
-
-            const slashDateParts = normalizedDateValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-
-            if (slashDateParts) {
-                const dateObject = new Date(
-                    Number(slashDateParts[3]),
-                    Number(slashDateParts[2]) - 1,
-                    Number(slashDateParts[1])
-                );
-
-                dateObject.setHours(0, 0, 0, 0);
-                return dateObject;
-            }
-
-            try {
-                const parsedDate = format.parse({
-                    value: normalizedDateValue,
-                    type: format.Type.DATE
-                });
-
-                parsedDate.setHours(0, 0, 0, 0);
-                return parsedDate;
-            } catch (e) {
-                logDebugError('cp_actual_expenses_reslet.parseDateForCompare.formatParse error', e, { dateValue });
-            }
-
-            try {
-                const parsedDate = globalHelper.normalizeDateValue(dateValue, 'date', error);
-
-                parsedDate.setHours(0, 0, 0, 0);
-                return parsedDate;
-            } catch (e) {
-                logDebugError('cp_actual_expenses_reslet.parseDateForCompare.normalizeDateValue error', e, { dateValue });
-                return null;
-            }
-        };
-
         const buildAdditionalFilters = (requestParams = {}) => {
             const filters = [];
-            const periodStart = normalizeSearchDate(requestParams.periodStart, 'periodStart');
-            const periodEnd = normalizeSearchDate(getPeriodEndValue(requestParams), 'periodEnd');
+            const periodStart = normalizeDateFilterValue(requestParams.periodStart, 'periodStart');
+            const periodEnd = normalizeDateFilterValue(requestParams.periodEnd, 'periodEnd');
             const locationId = resolveOptionalRecordId(
                 requestParams.location,
                 ['name'],
@@ -262,53 +197,9 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search', 
             return mappedResult;
         };
 
-        const getResultDateValue = (result) => {
-            let dateValue = null;
-
-            (result.columns || []).some((column, index) => {
-                const columnKey = normalizeColumnKey((column && column.label) || (column && column.name) || ('column_' + (index + 1)));
-
-                if (['date', 'trandate', 'tran_date', 'transaction_date'].indexOf(columnKey) < 0) {
-                    return false;
-                }
-
-                dateValue = getColumnValue(result, column);
-                return true;
-            });
-
-            return dateValue;
-        };
-
-        const filterResultsByPeriod = (results, requestParams = {}) => {
-            const periodStart = parseDateForCompare(requestParams.periodStart);
-            const periodEnd = parseDateForCompare(getPeriodEndValue(requestParams));
-
-            if (!periodStart && !periodEnd) {
-                return results;
-            }
-
-            return (results || []).filter((result) => {
-                const itemDate = parseDateForCompare(getResultDateValue(result));
-
-                if (!itemDate) {
-                    return false;
-                }
-
-                if (periodStart && itemDate.getTime() < periodStart.getTime()) {
-                    return false;
-                }
-
-                if (periodEnd && itemDate.getTime() > periodEnd.getTime()) {
-                    return false;
-                }
-
-                return true;
-            });
-        };
-
         const getAllSearchResults = (actualSearch) => {
             const searchResults = [];
-            const pagedData = actualSearch.runPaged({ pageSize: 1000 });
+            const pagedData = actualSearch.runPaged({ pageSize: SEARCH_PAGE_SIZE });
 
             pagedData.pageRanges.forEach((pageRange) => {
                 const page = pagedData.fetch({ index: pageRange.index });
@@ -325,19 +216,8 @@ define(['./helper/global', './helper/response', 'N/error', 'N/log', 'N/search', 
             try {
                 log.debug('GET requestParams', requestParams);
 
-                const limit = Math.min(
-                    globalHelper.parsePositiveInt(requestParams && requestParams.limit, DEFAULT_LIMIT),
-                    MAX_LIMIT
-                );
-                const actualOffset = globalHelper.isEmpty(requestParams && requestParams.offset)
-                    ? DEFAULT_OFFSET
-                    : Math.max(parseInt(requestParams.offset, 10) || 0, DEFAULT_OFFSET);
                 const actualSearch = buildSearch(requestParams);
-                const filteredResults = filterResultsByPeriod(
-                    getAllSearchResults(actualSearch),
-                    requestParams
-                );
-                const items = filteredResults.slice(actualOffset, actualOffset + limit).map(mapResult);
+                const items = getAllSearchResults(actualSearch).map(mapResult);
 
                 return responseHelper.success('Get Actual Expenses Successfully', items);
             } catch (e) {
